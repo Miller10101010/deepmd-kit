@@ -12,6 +12,9 @@ from ase import (
     Atoms,
 )
 
+from ase.constraints import (
+    FixAtoms,
+)
 from ase.optimize import (
     BFGS,
 )
@@ -61,9 +64,13 @@ def test_stress_symmetrizes_flat_virial() -> None:
     np.testing.assert_array_equal(calculator.results["virial"], virial.reshape(3, 3))
 
 
-@pytest.mark.parametrize("relax_positions", [False, True])
-def test_relax_magnetic_atoms(relax_positions: bool) -> None:
+@pytest.mark.parametrize(
+    ("relax_positions", "fix_fe"), [(False, False), (True, False), (True, True)]
+)
+def test_relax_magnetic_atoms(relax_positions: bool, fix_fe: bool) -> None:
     atoms = Atoms("FeO", positions=[[0.2, 0, 0], [0.5, 0, 0]])
+    if fix_fe:
+        atoms.set_constraint(FixAtoms(indices=[0]))
     initial_positions = atoms.positions.copy()
     initial_moments = np.array([[0.4, -0.2, 0.1], [0.3, 0.5, 0.2]])
     atoms.set_initial_magnetic_moments(initial_moments)
@@ -84,6 +91,10 @@ def test_relax_magnetic_atoms(relax_positions: bool) -> None:
     moments = atoms.get_initial_magnetic_moments()
     np.testing.assert_allclose(moments[0], 0, atol=1e-6)
     np.testing.assert_array_equal(moments[1], initial_moments[1])
-    np.testing.assert_allclose(
-        atoms.positions, 0 if relax_positions else initial_positions, atol=1e-6
-    )
+    if fix_fe:
+        np.testing.assert_array_equal(atoms.positions[0], initial_positions[0])
+        np.testing.assert_allclose(atoms.positions[1], 0, atol=1e-6)
+    else:
+        np.testing.assert_allclose(
+            atoms.positions, 0 if relax_positions else initial_positions, atol=1e-6
+        )

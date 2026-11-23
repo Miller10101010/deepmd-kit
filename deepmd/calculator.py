@@ -390,7 +390,11 @@ class DP(Calculator):
 
 
 class SpinFilter(Filter):
-    """Relax magnetic moments and optionally atomic positions at fixed cell."""
+    """Relax magnetic moments and optionally atomic positions at fixed cell.
+
+    In joint mode, fmax bounds both maximum vector norms: atomic force in
+    eV/angstrom and magnetic force in eV per model spin unit.
+    """
 
     def __init__(self, atoms: "Atoms", *, relax_positions: bool = False) -> None:
         if "magnetic_mask" not in getattr(atoms.calc, "implemented_properties", ()):
