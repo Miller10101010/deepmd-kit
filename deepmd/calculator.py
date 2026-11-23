@@ -33,6 +33,9 @@ from ase.calculators.calculator import (
     PropertyNotImplementedError,
     all_changes,
 )
+from ase.filters import (
+    Filter,
+)
 
 from deepmd.infer import (
     DeepPot,
@@ -54,7 +57,7 @@ if TYPE_CHECKING:
         DeepEvalBackend,
     )
 
-__all__ = ["DP"]
+__all__ = ["DP", "SpinFilter"]
 
 log = logging.getLogger(__name__)
 
@@ -280,6 +283,12 @@ class DP(Calculator):
                 "freeze=False is intended for debugging and similar short runs "
                 "that avoid the upfront compilation overhead."
             )
+        if self.dp.has_spin:
+            self.implemented_properties = [
+                *self.implemented_properties,
+                "magnetic_forces",
+                "magnetic_mask",
+            ]
         if type_dict:
             self.type_dict = type_dict
         else:
@@ -336,14 +345,28 @@ class DP(Calculator):
         fparam = self.atoms.info.get("fparam", None)
         aparam = self.atoms.info.get("aparam", None)
         charge_spin = self.atoms.info.get("charge_spin", None)
-        e, f, v = self.dp.eval(
+        spin_inputs = {}
+        if self.dp.has_spin:
+            moments = self.atoms.get_initial_magnetic_moments()
+            if moments.shape != (len(self.atoms), 3):
+                raise ValueError(
+                    "Set one three-component initial magnetic moment per atom."
+                )
+            spin_inputs["spin"] = moments[None, ...]
+        outputs = self.dp.eval(
             coords=coord,
             cells=cell,
             atom_types=atype,
             fparam=fparam,
             aparam=aparam,
             charge_spin=charge_spin,
-        )[:3]
+            **spin_inputs,
+        )
+        e, f, v = outputs[:3]
+        if self.dp.has_spin:
+            magnetic_forces, magnetic_mask = outputs[3:5]
+            self.results["magnetic_forces"] = magnetic_forces[0]
+            self.results["magnetic_mask"] = magnetic_mask.reshape(-1).astype(bool)
         self.results["energy"] = e[0][0]
         # see https://gitlab.com/ase/ase/-/merge_requests/2485
         self.results["free_energy"] = e[0][0]
@@ -365,3 +388,57 @@ class DP(Calculator):
             raise PropertyNotImplementedError
         else:
             pass
+
+
+class SpinFilter(Filter):
+    """Relax the Cartesian magnetic moments and optionally the atomic coordinates at fixed cell.
+
+    Give every atom a three-component initial magnetic moment and attach a
+    spin-aware DP calculator. Use BFGS(SpinFilter(atoms)) for moments only,
+    or BFGS(SpinFilter(atoms, relax_positions=True)) for joint optimization.
+    In joint mode fmax applies numerically to both the atomic forces in
+    eV/angstrom and magnetic forces in eV per model spin unit.
+    The relaxed moments are available through atoms.get_initial_magnetic_moments().
+    """
+
+    def __init__(self, atoms: "Atoms", *, relax_positions: bool = False) -> None:
+        if (
+            atoms.calc is None
+            or "magnetic_mask" not in atoms.calc.implemented_properties
+        ):
+            raise ValueError(
+                "SpinFilter requires a calculator with magnetic forces and a magnetic mask."
+            )
+        mask = atoms.calc.get_property("magnetic_mask", atoms)
+        if not np.any(mask):
+            raise ValueError("The model marks no atoms in this structure as magnetic.")
+        super().__init__(atoms, mask=mask)
+        self.relax_positions = relax_positions
+
+    def __len__(self):
+        return super().__len__() + (len(self.atoms) if self.relax_positions else 0)
+
+    def get_positions(self):
+        moments = self.atoms.get_initial_magnetic_moments()[self.index]
+        if self.relax_positions:
+            return np.concatenate((self.atoms.get_positions(), moments))
+        return moments
+
+    def set_positions(self, positions, **kwargs):
+        moments = self.atoms.get_initial_magnetic_moments()
+        if self.relax_positions:
+            n = len(self.atoms)
+            self.atoms.set_positions(positions[:n], **kwargs)
+            positions = positions[n:]
+        moments[self.index] = positions
+        self.atoms.set_initial_magnetic_moments(moments)
+
+    positions = property(get_positions, set_positions)
+
+    def get_forces(self, **kwargs):
+        magnetic = self.atoms.calc.get_property("magnetic_forces", self.atoms)[
+            self.index
+        ]
+        if self.relax_positions:
+            return np.concatenate((self.atoms.get_forces(**kwargs), magnetic))
+        return magnetic
