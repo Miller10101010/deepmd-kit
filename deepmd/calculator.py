@@ -413,32 +413,31 @@ class SpinFilter(Filter):
         if not np.any(mask):
             raise ValueError("The model marks no atoms in this structure as magnetic.")
         super().__init__(atoms, mask=mask)
-        self.relax_positions = relax_positions
+        # Optimizer rows are [atomic positions, active moments]. The first
+        # block is empty for spin-only relaxation.
+        self._ncoords = len(atoms) if relax_positions else 0
 
     def __len__(self):
-        return super().__len__() + (len(self.atoms) if self.relax_positions else 0)
+        return self._ncoords + super().__len__()
+
+    def _pack(self, get_atomic, magnetic, **kwargs):
+        if self._ncoords:
+            return np.concatenate((get_atomic(**kwargs), magnetic))
+        return magnetic
 
     def get_positions(self):
         moments = self.atoms.get_initial_magnetic_moments()[self.index]
-        if self.relax_positions:
-            return np.concatenate((self.atoms.get_positions(), moments))
-        return moments
+        return self._pack(self.atoms.get_positions, moments)
 
     def set_positions(self, positions, **kwargs):
+        if self._ncoords:
+            self.atoms.set_positions(positions[: self._ncoords], **kwargs)
         moments = self.atoms.get_initial_magnetic_moments()
-        if self.relax_positions:
-            n = len(self.atoms)
-            self.atoms.set_positions(positions[:n], **kwargs)
-            positions = positions[n:]
-        moments[self.index] = positions
+        moments[self.index] = positions[self._ncoords :]
         self.atoms.set_initial_magnetic_moments(moments)
 
     positions = property(get_positions, set_positions)
 
     def get_forces(self, **kwargs):
-        magnetic = self.atoms.calc.get_property("magnetic_forces", self.atoms)[
-            self.index
-        ]
-        if self.relax_positions:
-            return np.concatenate((self.atoms.get_forces(**kwargs), magnetic))
-        return magnetic
+        magnetic = self.atoms.calc.get_property("magnetic_forces", self.atoms)
+        return self._pack(self.atoms.get_forces, magnetic[self.index], **kwargs)
