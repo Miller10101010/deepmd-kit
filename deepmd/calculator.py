@@ -284,8 +284,7 @@ class DP(Calculator):
                 "that avoid the upfront compilation overhead."
             )
         if self.dp.has_spin:
-            self.implemented_properties = [
-                *self.implemented_properties,
+            self.implemented_properties = self.implemented_properties + [
                 "magnetic_forces",
                 "magnetic_mask",
             ]
@@ -391,30 +390,15 @@ class DP(Calculator):
 
 
 class SpinFilter(Filter):
-    """Relax the Cartesian magnetic moments and optionally the atomic coordinates at fixed cell.
-
-    Give every atom a three-component initial magnetic moment and attach a
-    spin-aware DP calculator. Use BFGS(SpinFilter(atoms)) for moments only,
-    or BFGS(SpinFilter(atoms, relax_positions=True)) for joint optimization.
-    In joint mode fmax applies numerically to both the atomic forces in
-    eV/angstrom and magnetic forces in eV per model spin unit.
-    The relaxed moments are available through atoms.get_initial_magnetic_moments().
-    """
+    """Relax magnetic moments and optionally atomic positions at fixed cell."""
 
     def __init__(self, atoms: "Atoms", *, relax_positions: bool = False) -> None:
-        if (
-            atoms.calc is None
-            or "magnetic_mask" not in atoms.calc.implemented_properties
-        ):
-            raise ValueError(
-                "SpinFilter requires a calculator with magnetic forces and a magnetic mask."
-            )
+        if "magnetic_mask" not in getattr(atoms.calc, "implemented_properties", ()):
+            raise ValueError("SpinFilter requires a spin-aware calculator.")
         mask = atoms.calc.get_property("magnetic_mask", atoms)
         if not np.any(mask):
             raise ValueError("The model marks no atoms in this structure as magnetic.")
         super().__init__(atoms, mask=mask)
-        # Optimizer rows are [atomic positions, active moments]. The first
-        # block is empty for spin-only relaxation.
         self._ncoords = len(atoms) if relax_positions else 0
 
     def __len__(self):
